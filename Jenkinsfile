@@ -1,66 +1,21 @@
 pipeline {
   agent {
     kubernetes {
-      label 'xtext-xtend-' + (env.BRANCH_NAME.replace('/','_')) + '-' + env.BUILD_NUMBER
-      defaultContainer 'xtext-buildenv'
-      yaml '''
-apiVersion: v1
-kind: Pod
-spec:
-  containers:
-  - name: jnlp
-    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
-    resources:
-      limits:
-        memory: "0.4Gi"
-        cpu: "0.2"
-      requests:
-        memory: "0.4Gi"
-        cpu: "0.2"
-    volumeMounts:
-    - mountPath: /home/jenkins/.ssh
-      name: volume-known-hosts
-  - name: xtext-buildenv
-    image: docker.io/smoht/xtext-buildenv:0.7
-    tty: true
-    resources:
-      limits:
-        memory: "3.6Gi"
-        cpu: "1.0"
-      requests:
-        memory: "3.6Gi"
-        cpu: "1.0"
-    volumeMounts:
-    - name: settings-xml
-      mountPath: /home/jenkins/.m2/settings.xml
-      subPath: settings.xml
-      readOnly: true
-    - name: m2-repo
-      mountPath: /home/jenkins/.m2/repository
-    - name: volume-known-hosts
-      mountPath: /home/jenkins/.ssh
-  volumes:
-  - name: volume-known-hosts
-    configMap:
-      name: known-hosts
-  - name: settings-xml
-    secret:
-      secretName: m2-secret-dir
-      items:
-      - key: settings.xml
-        path: settings.xml
-  - name: m2-repo
-    emptyDir: {}
-    '''
+      label 'centos-7'
     }
   }
   
   environment {
     DOWNSTREAM_JOBS = 'xtext-umbrella'
+    GRADLE_USER_HOME = "$WORKSPACE/.gradle" // workaround for https://bugs.eclipse.org/bugs/show_bug.cgi?id=564559
   }
 
   parameters {
     choice(name: 'target_platform', choices: ['oxygen', 'photon', 'r201812', 'r201809', 'r201903', 'r201906', 'r201909', 'r201912', 'r202003', 'r202006', 'latest'], description: 'Which Target Platform should be used?')
+    // see https://wiki.eclipse.org/Jenkins#JDK
+    choice(name: 'JDK_VERSION', description: 'Which JDK should be used?', choices: [
+       'adoptopenjdk-hotspot-jdk8-latest', 'adoptopenjdk-hotspot-jdk11-latest', 'adoptopenjdk-hotspot-latest'
+    ])
     booleanParam(
       name: 'TRIGGER_DOWNSTREAM_BUILD', 
       defaultValue: (env.BRANCH_NAME.startsWith('milestone')||env.BRANCH_NAME.startsWith('release')), 
@@ -69,13 +24,18 @@ spec:
   }
 
   triggers {
-    parameterizedCron(env.BRANCH_NAME == 'master' ? 'H H(0-1) * * * %target_platform=latest' : '')
+    parameterizedCron(env.BRANCH_NAME == 'master' ? 'H H(0-1) * * * %target_platform=latest;JDK_VERSION=adoptopenjdk-hotspot-jdk11-latest' : '')
   }
 
   options {
     buildDiscarder(logRotator(numToKeepStr:'5'))
     disableConcurrentBuilds()
     timeout(time: 320, unit: 'MINUTES')
+  }
+
+  tools {
+     maven "apache-maven-latest"
+     jdk "${params.JDK_VERSION}"
   }
 
   stages {
@@ -144,10 +104,11 @@ spec:
         } // END stage
         stage('Maven Tycho Build') {
           steps {
+            wrap([$class: 'Xvnc', takeScreenshot: false, useXauthority: true]) {
             sh """
-              /home/vnc/.vnc/xstartup.sh
               ./3-maven-tycho-build.sh -s /home/jenkins/.m2/settings.xml --tp=${params.target_platform} --local-repository=/home/jenkins/.m2/repository
             """
+            }
           }// END steps
         } // END stage
       } // END parallel
